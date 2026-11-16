@@ -1,14 +1,17 @@
 {
   "name": "multichain-wallet",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Multichain burner wallet — one BIP39 seed for BTC, EVM, Solana and TRON, with an offline decryptor",
+  "main": "generate.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test-vectors.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["wallet", "bip39", "bitcoin", "ethereum", "solana", "tron", "burner"],
+  "author": "deco",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@noble/curves": "^2.4.0",
     "@scure/bip32": "^2.4.0",

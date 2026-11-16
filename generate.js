@@ -142,7 +142,7 @@ async function main() {
   // 6. Public addresses file.
   const addressesTxt =
 `Multichain burner wallet — public addresses
-Generated: ${payload.created} on Muse's VM
+Generated: ${payload.created}
 One BIP39 seed, standard paths. Same EVM address on all EVM chains.
 
 Bitcoin SegWit (mainnet)  m/84'/0'/0'/0/0   ${btcAddr}

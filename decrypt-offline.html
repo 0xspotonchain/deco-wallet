@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Burner Wallet Backup Decryptor (offline)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2em auto; padding: 0 1em; background: #111; color: #eee; }
+  h1 { font-size: 1.3em; }
+  .warn { background: #3a2a00; border: 1px solid #a80; padding: 0.8em; border-radius: 6px; font-size: 0.9em; }
+  label { display: block; margin: 1em 0 0.3em; font-weight: 600; }
+  input, textarea, button { width: 100%; box-sizing: border-box; font-size: 1em; padding: 0.6em; border-radius: 6px; border: 1px solid #555; background: #222; color: #eee; }
+  button { background: #2a6; border: none; cursor: pointer; margin-top: 1em; font-weight: 600; }
+  button.secondary { background: #444; }
+  #error { color: #f66; margin-top: 1em; }
+  #result { display: none; margin-top: 1.5em; }
+  .field { margin: 0.8em 0; }
+  .field .name { font-size: 0.85em; color: #aaa; }
+  .field .value { word-break: break-all; background: #1a2a1a; padding: 0.5em; border-radius: 4px; font-family: monospace; font-size: 0.9em; }
+  .field button { width: auto; padding: 0.3em 0.8em; margin-top: 0.3em; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<h1>Burner Wallet Backup Decryptor</h1>
+<p class="warn"><strong>Offline only.</strong> This page has no network code — it never sends anything anywhere. Run it with Wi-Fi/mobile data off if you want to be extra sure. The output contains your seed phrase and private keys: never paste it anywhere, never screenshot it, and clear this page when done.</p>
+
+<label for="file">1. Pick your backup file (wallet-backup-encrypted.json)</label>
+<input type="file" id="file" accept=".json,application/json">
+<label for="paste">…or paste the backup JSON here</label>
+<textarea id="paste" rows="3" placeholder='{"format":"muse-multichain-backup-v1", ...}'></textarea>
+
+<label for="pw">2. Backup password</label>
+<input type="password" id="pw" autocomplete="off" placeholder="The password you chose for the backup">
+
+<button id="go">Decrypt backup</button>
+<div id="error"></div>
+
+<div id="result">
+  <h2>Decrypted backup</h2>
+  <div id="fields"></div>
+  <button id="clear" class="secondary">Clear everything from this page</button>
+</div>
+
+<script>
+// ---- Pure crypto (no DOM). Also testable in Node: the DOM wiring below is
+// guarded by `typeof document !== 'undefined'`.
+// Format: muse-multichain-backup-v1 — scrypt(passphrase, salt) + AES-256-GCM.
+function b64decode(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function rotl(v, c) { return ((v << c) | (v >>> (32 - c))) >>> 0; }
+
+function salsa208(block) { // block: Uint8Array(64) -> Uint8Array(64)
+  const x = new Uint32Array(16);
+  for (let i = 0; i < 16; i++) x[i] = (block[i * 4] | (block[i * 4 + 1] << 8) | (block[i * 4 + 2] << 16) | (block[i * 4 + 3] << 24)) >>> 0;
+  const o = new Uint32Array(x);
+  for (let round = 0; round < 8; round += 2) {
+    // column round
+    x[4] ^= rotl((x[0] + x[12]) >>> 0, 7);   x[8] ^= rotl((x[4] + x[0]) >>> 0, 9);
+    x[12] ^= rotl((x[8] + x[4]) >>> 0, 13);  x[0] ^= rotl((x[12] + x[8]) >>> 0, 18);
+    x[9] ^= rotl((x[5] + x[1]) >>> 0, 7);    x[13] ^= rotl((x[9] + x[5]) >>> 0, 9);
+    x[1] ^= rotl((x[13] + x[9]) >>> 0, 13);  x[5] ^= rotl((x[1] + x[13]) >>> 0, 18);
+    x[14] ^= rotl((x[10] + x[6]) >>> 0, 7);  x[2] ^= rotl((x[14] + x[10]) >>> 0, 9);
+    x[6] ^= rotl((x[2] + x[14]) >>> 0, 13);  x[10] ^= rotl((x[6] + x[2]) >>> 0, 18);
+    x[3] ^= rotl((x[15] + x[11]) >>> 0, 7);  x[7] ^= rotl((x[3] + x[15]) >>> 0, 9);
+    x[11] ^= rotl((x[7] + x[3]) >>> 0, 13);  x[15] ^= rotl((x[11] + x[7]) >>> 0, 18);
+    // row round
+    x[1] ^= rotl((x[0] + x[3]) >>> 0, 7);    x[2] ^= rotl((x[1] + x[0]) >>> 0, 9);
+    x[3] ^= rotl((x[2] + x[1]) >>> 0, 13);   x[0] ^= rotl((x[3] + x[2]) >>> 0, 18);
+    x[6] ^= rotl((x[5] + x[4]) >>> 0, 7);    x[7] ^= rotl((x[6] + x[5]) >>> 0, 9);
+    x[4] ^= rotl((x[7] + x[6]) >>> 0, 13);   x[5] ^= rotl((x[4] + x[7]) >>> 0, 18);
+    x[11] ^= rotl((x[10] + x[9]) >>> 0, 7);  x[8] ^= rotl((x[11] + x[10]) >>> 0, 9);
+    x[9] ^= rotl((x[8] + x[11]) >>> 0, 13);  x[10] ^= rotl((x[9] + x[8]) >>> 0, 18);
+    x[12] ^= rotl((x[15] + x[14]) >>> 0, 7); x[13] ^= rotl((x[12] + x[15]) >>> 0, 9);
+    x[14] ^= rotl((x[13] + x[12]) >>> 0, 13); x[15] ^= rotl((x[14] + x[13]) >>> 0, 18);
+  }
+  const out = new Uint8Array(64);
+  for (let i = 0; i < 16; i++) {
+    const v = (x[i] + o[i]) >>> 0;
+    out[i * 4] = v & 0xff; out[i * 4 + 1] = (v >>> 8) & 0xff;
+    out[i * 4 + 2] = (v >>> 16) & 0xff; out[i * 4 + 3] = (v >>> 24) & 0xff;
+  }
+  return out;
+}
+
+function blockMix(B, r) { // B: Uint8Array(128*r)
+  const X = new Uint8Array(64);
+  X.set(B.subarray((2 * r - 1) * 64, 2 * r * 64));
+  const Y = new Uint8Array(128 * r);
+  for (let i = 0; i < 2 * r; i++) {
+    const Bi = B.subarray(i * 64, (i + 1) * 64);
+    for (let j = 0; j < 64; j++) X[j] ^= Bi[j];
+    const mixed = salsa208(X);
+    X.set(mixed);
+    Y.set(mixed, i * 64);
+  }
+  const out = new Uint8Array(128 * r);
+  for (let i = 0; i < r; i++) out.set(Y.subarray(2 * i * 64, (2 * i + 1) * 64), i * 64);
+  for (let i = 0; i < r; i++) out.set(Y.subarray((2 * i + 1) * 64, (2 * i + 2) * 64), (r + i) * 64);
+  return out;
+}
+
+function integerify(X, r) { // low 32 bits of the last 64-byte block, little-endian
+  const off = (2 * r - 1) * 64;
+  return (X[off] | (X[off + 1] << 8) | (X[off + 2] << 16) | (X[off + 3] << 24)) >>> 0;
+}
+
+function romix(B, N, r) {
+  const X = new Uint8Array(B);
+  const V = new Array(N);
+  for (let i = 0; i < N; i++) { V[i] = new Uint8Array(X); X.set(blockMix(X, r)); }
+  for (let i = 0; i < N; i++) {
+    const Vj = V[integerify(X, r) % N];
+    for (let k = 0; k < X.length; k++) X[k] ^= Vj[k];
+    X.set(blockMix(X, r));
+  }
+  return X;
+}
+
+async function scryptKey(password, salt, N, r, p, dkLen) {
+  const pwKey = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const B = new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: salt, iterations: 1, hash: 'SHA-256' }, pwKey, p * 128 * r * 8));
+  const blockSize = 128 * r;
+  const mixed = new Uint8Array(B.length);
+  for (let i = 0; i < p; i++) mixed.set(romix(B.subarray(i * blockSize, (i + 1) * blockSize), N, r), i * blockSize);
+  return new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: mixed, iterations: 1, hash: 'SHA-256' }, pwKey, dkLen * 8));
+}
+
+async function decryptBackup(enc, password) {
+  if (enc.format !== 'muse-multichain-backup-v1' || enc.cipher !== 'aes-256-gcm' || enc.kdf !== 'scrypt') {
+    throw new Error('Unrecognized backup file format.');
+  }
+  const keyBytes = await scryptKey(password, b64decode(enc.salt),
+    enc.kdfParams.N, enc.kdfParams.r, enc.kdfParams.p, enc.kdfParams.dkLen);
+  const key = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const data = b64decode(enc.data), tag = b64decode(enc.tag);
+  const ct = new Uint8Array(data.length + tag.length);
+  ct.set(data, 0); ct.set(tag, data.length);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64decode(enc.iv) }, key, ct);
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
+// ---- DOM wiring (browser only) ----
+if (typeof document !== 'undefined') {
+  const $ = (id) => document.getElementById(id);
+  let fileText = null;
+  $('file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (f) fileText = await f.text();
+  });
+  $('go').addEventListener('click', async () => {
+    $('error').textContent = '';
+    $('result').style.display = 'none';
+    $('fields').innerHTML = '';
+    const text = (fileText || $('paste').value || '').trim();
+    const pw = $('pw').value;
+    if (!text) { $('error').textContent = 'Pick the backup file or paste its JSON first.'; return; }
+    if (!pw) { $('error').textContent = 'Enter your backup password.'; return; }
+    let enc;
+    try { enc = JSON.parse(text); } catch { $('error').textContent = 'That is not valid backup JSON.'; return; }
+    $('go').textContent = 'Decrypting… (a few seconds)';
+    $('go').disabled = true;
+    try {
+      const b = await decryptBackup(enc, pw);
+      const rows = [
+        ['Seed phrase (12 words) — import into any wallet', b.mnemonic],
+        ['BTC SegWit address', b.addresses.btc],
+        ['BTC private key (WIF)', b.keys.btc.privateKeyWIF],
+        ['BTC testnet4 address', b.addresses.btc_testnet4],
+        ['BTC testnet4 private key (WIF)', b.keys.btc_testnet4.privateKeyWIF],
+        ['EVM address', b.addresses.evm],
+        ['EVM private key', b.keys.evm.privateKey],
+        ['Solana address', b.addresses.solana],
+        ['Solana private key (base58)', b.keys.solana.privateKeyBase58],
+        ['TRON address', b.addresses.tron],
+        ['TRON private key (hex)', b.keys.tron.privateKey],
+      ];
+      for (const [name, value] of rows) {
+        const div = document.createElement('div');
+        div.className = 'field';
+        const n = document.createElement('div'); n.className = 'name'; n.textContent = name;
+        const v = document.createElement('div'); v.className = 'value'; v.textContent = value;
+        const c = document.createElement('button');
+        c.textContent = 'Copy';
+        c.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(value); c.textContent = 'Copied'; }
+          catch { const t = document.createElement('textarea'); t.value = value; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); c.textContent = 'Copied'; }
+          setTimeout(() => { c.textContent = 'Copy'; }, 1500);
+        });
+        div.append(n, v, c);
+        $('fields').appendChild(div);
+      }
+      $('result').style.display = 'block';
+    } catch (e) {
+      $('error').textContent = 'Wrong password, or the backup file is corrupted.';
+    }
+    $('go').textContent = 'Decrypt backup';
+    $('go').disabled = false;
+  });
+  $('clear').addEventListener('click', () => {
+    $('fields').innerHTML = '';
+    $('result').style.display = 'none';
+    $('pw').value = '';
+    $('paste').value = '';
+    fileText = null;
+    $('file').value = '';
+  });
+}
+</script>
+</body>
+</html>

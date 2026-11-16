@@ -112,3 +112,7 @@ bip-utils for cross-checks only.
 
 ## License
 MIT — see LICENSE.
+
+## Built with
+
+Built with [Muse](https://muse.ai) — deco's AI agent.
